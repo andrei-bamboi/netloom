@@ -14,6 +14,7 @@ locals {
 }
 
 resource "aws_apigatewayv2_api" "http" {
+  count         = local.edge_count
   name          = "${local.name}-api"
   protocol_type = "HTTP"
   description   = "netloom - authenticated VPC provisioning API"
@@ -30,19 +31,21 @@ resource "aws_apigatewayv2_api" "http" {
 }
 
 resource "aws_apigatewayv2_authorizer" "cognito" {
-  api_id           = aws_apigatewayv2_api.http.id
+  count            = local.edge_count
+  api_id           = aws_apigatewayv2_api.http[0].id
   name             = "cognito-jwt"
   authorizer_type  = "JWT"
   identity_sources = ["$request.header.Authorization"]
 
   jwt_configuration {
-    issuer   = "https://${aws_cognito_user_pool.users.endpoint}"
-    audience = [aws_cognito_user_pool_client.humans.id, aws_cognito_user_pool_client.machines.id]
+    issuer   = "https://${aws_cognito_user_pool.users[0].endpoint}"
+    audience = [aws_cognito_user_pool_client.humans[0].id, aws_cognito_user_pool_client.machines[0].id]
   }
 }
 
 resource "aws_apigatewayv2_integration" "api" {
-  api_id                 = aws_apigatewayv2_api.http.id
+  count                  = local.edge_count
+  api_id                 = aws_apigatewayv2_api.http[0].id
   integration_type       = "AWS_PROXY"
   integration_uri        = aws_lambda_function.api.invoke_arn
   payload_format_version = "2.0"
@@ -50,21 +53,23 @@ resource "aws_apigatewayv2_integration" "api" {
 }
 
 resource "aws_apigatewayv2_route" "this" {
-  for_each           = local.routes
-  api_id             = aws_apigatewayv2_api.http.id
+  for_each           = var.enable_edge ? local.routes : {}
+  api_id             = aws_apigatewayv2_api.http[0].id
   route_key          = each.key
-  target             = "integrations/${aws_apigatewayv2_integration.api.id}"
+  target             = "integrations/${aws_apigatewayv2_integration.api[0].id}"
   authorization_type = each.value ? "JWT" : "NONE"
-  authorizer_id      = each.value ? aws_apigatewayv2_authorizer.cognito.id : null
+  authorizer_id      = each.value ? aws_apigatewayv2_authorizer.cognito[0].id : null
 }
 
 resource "aws_cloudwatch_log_group" "access" {
+  count             = local.edge_count
   name              = "/aws/apigateway/${local.name}-access"
   retention_in_days = var.log_retention_days
 }
 
 resource "aws_apigatewayv2_stage" "default" {
-  api_id      = aws_apigatewayv2_api.http.id
+  count       = local.edge_count
+  api_id      = aws_apigatewayv2_api.http[0].id
   name        = "$default"
   auto_deploy = true
 
@@ -74,7 +79,7 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 
   access_log_settings {
-    destination_arn = aws_cloudwatch_log_group.access.arn
+    destination_arn = aws_cloudwatch_log_group.access[0].arn
     format = jsonencode({
       requestId   = "$context.requestId"
       ip          = "$context.identity.sourceIp"
@@ -90,9 +95,10 @@ resource "aws_apigatewayv2_stage" "default" {
 }
 
 resource "aws_lambda_permission" "apigw" {
+  count         = local.edge_count
   statement_id  = "AllowHttpApiInvoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.api.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http.execution_arn}/*/*"
+  source_arn    = "${aws_apigatewayv2_api.http[0].execution_arn}/*/*"
 }

@@ -9,6 +9,7 @@
 # allowed on every route, as the exercise requires.
 
 resource "aws_cognito_user_pool" "users" {
+  count                    = local.edge_count
   name                     = "${local.name}-users"
   username_attributes      = ["email"]
   auto_verified_attributes = ["email"]
@@ -41,8 +42,9 @@ resource "aws_cognito_user_pool" "users" {
 }
 
 resource "aws_cognito_user_pool_client" "humans" {
+  count                         = local.edge_count
   name                          = "${local.name}-cli"
-  user_pool_id                  = aws_cognito_user_pool.users.id
+  user_pool_id                  = aws_cognito_user_pool.users[0].id
   generate_secret               = false
   prevent_user_existence_errors = "ENABLED"
   enable_token_revocation       = true
@@ -59,14 +61,16 @@ resource "aws_cognito_user_pool_client" "humans" {
 }
 
 resource "aws_cognito_user_pool_domain" "oauth" {
-  domain       = "${local.name}-${random_string.suffix.result}"
-  user_pool_id = aws_cognito_user_pool.users.id
+  count        = local.edge_count
+  domain       = "${local.name}-${random_string.suffix[0].result}"
+  user_pool_id = aws_cognito_user_pool.users[0].id
 }
 
 resource "aws_cognito_resource_server" "api" {
+  count        = local.edge_count
   identifier   = var.project
   name         = "${local.name} API"
-  user_pool_id = aws_cognito_user_pool.users.id
+  user_pool_id = aws_cognito_user_pool.users[0].id
 
   scope {
     scope_name        = "api"
@@ -75,12 +79,13 @@ resource "aws_cognito_resource_server" "api" {
 }
 
 resource "aws_cognito_user_pool_client" "machines" {
+  count                                = local.edge_count
   name                                 = "${local.name}-automation"
-  user_pool_id                         = aws_cognito_user_pool.users.id
+  user_pool_id                         = aws_cognito_user_pool.users[0].id
   generate_secret                      = true
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["client_credentials"]
-  allowed_oauth_scopes                 = ["${aws_cognito_resource_server.api.identifier}/api"]
+  allowed_oauth_scopes                 = ["${aws_cognito_resource_server.api[0].identifier}/api"]
   access_token_validity                = var.access_token_minutes
   supported_identity_providers         = ["COGNITO"]
 
@@ -90,8 +95,8 @@ resource "aws_cognito_user_pool_client" "machines" {
 }
 
 resource "aws_cognito_user" "invited" {
-  for_each     = toset(var.invited_users)
-  user_pool_id = aws_cognito_user_pool.users.id
+  for_each     = var.enable_edge ? toset(var.invited_users) : toset([])
+  user_pool_id = aws_cognito_user_pool.users[0].id
   username     = each.value
 
   attributes = {

@@ -1,5 +1,5 @@
-# Offline contract tests for the stack - no AWS credentials needed.
-#   cd infra/app && terraform init -backend=false && terraform test
+# Offline contract tests for the module - no AWS credentials needed.
+#   cd infra/modules/netloom && terraform init && terraform test
 
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
@@ -7,6 +7,9 @@ mock_provider "aws" {
   }
   mock_data "aws_partition" {
     defaults = { partition = "aws" }
+  }
+  mock_data "aws_region" {
+    defaults = { region = "eu-central-1" }
   }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
@@ -41,7 +44,7 @@ run "self_signup_is_disabled" {
   command = plan
 
   assert {
-    condition     = aws_cognito_user_pool.users.admin_create_user_config[0].allow_admin_create_user_only
+    condition     = aws_cognito_user_pool.users[0].admin_create_user_config[0].allow_admin_create_user_only
     error_message = "Only administrators may create users."
   }
 }
@@ -82,5 +85,27 @@ run "table_is_pay_per_request_with_ttl" {
   assert {
     condition     = aws_dynamodb_table.ledger.billing_mode == "PAY_PER_REQUEST" && aws_dynamodb_table.ledger.ttl[0].attribute_name == "expires_at"
     error_message = "Ledger table misconfigured."
+  }
+}
+
+run "edge_can_be_disabled_for_emulators" {
+  command = plan
+
+  variables {
+    enable_edge   = false
+    invited_users = ["someone@example.com"]
+  }
+
+  assert {
+    condition     = length(aws_cognito_user_pool.users) == 0 && length(aws_apigatewayv2_api.http) == 0 && length(aws_apigatewayv2_route.this) == 0
+    error_message = "No Cognito or API Gateway resources may be planned when the edge is disabled."
+  }
+  assert {
+    condition     = length(aws_cognito_user.invited) == 0
+    error_message = "Users cannot be invited without a user pool."
+  }
+  assert {
+    condition     = aws_lambda_function.api.handler == "netloom.api.handler" && aws_sfn_state_machine.lifecycle.type == "STANDARD"
+    error_message = "The core must still be deployed."
   }
 }

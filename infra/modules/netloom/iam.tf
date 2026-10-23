@@ -27,7 +27,7 @@ data "aws_iam_policy_document" "assume_states" {
 
 locals {
   table_arns = [aws_dynamodb_table.ledger.arn, "${aws_dynamodb_table.ledger.arn}/index/*"]
-  ec2_arn    = "arn:${local.partition}:ec2:${var.region}:${local.account_id}"
+  ec2_arn    = "arn:${local.partition}:ec2:${local.region}:${local.account_id}"
 }
 
 # --------------------------------------------------------------------------- API function

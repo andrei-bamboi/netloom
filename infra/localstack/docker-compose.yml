@@ -1,0 +1,31 @@
+# LocalStack for local end-to-end runs of netloom.
+#
+# Since LocalStack 2026.03 an auth token is required to start the image. The
+# free Hobby plan (non-commercial use) is enough for the default setup here:
+#   export LOCALSTACK_AUTH_TOKEN=...   # https://app.localstack.cloud -> Auth Tokens
+#   docker compose -f infra/localstack/docker-compose.yml up -d
+#
+# LOCALSTACK_IMAGE can pin a different image, e.g. an older Community build
+# (localstack/localstack:4.14) that still starts without a token.
+services:
+  localstack:
+    image: ${LOCALSTACK_IMAGE:-localstack/localstack:2026.10.0}
+    container_name: netloom-localstack
+    ports:
+      - "127.0.0.1:4566:4566"
+    environment:
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+      SERVICES: dynamodb,ec2,iam,kms,lambda,logs,stepfunctions,sts,cloudwatch,s3,apigateway,apigatewayv2,cognito-idp
+      # The Lambdas are built for arm64; run them on whatever the host is.
+      LAMBDA_IGNORE_ARCHITECTURE: "1"
+      # Keep warm containers between workflow steps (faster polling demo).
+      LAMBDA_KEEPALIVE_MS: "600000"
+      DEBUG: ${DEBUG:-0}
+    volumes:
+      # LocalStack runs each Lambda in its own container via the host daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30

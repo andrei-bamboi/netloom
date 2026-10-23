@@ -1,44 +1,15 @@
-output "api_url" {
-  description = "Base URL of the API."
-  value       = aws_apigatewayv2_stage.default.invoke_url
-}
-
-output "user_pool_id" {
-  value = aws_cognito_user_pool.users.id
-}
-
-output "user_client_id" {
-  description = "App client for humans (USER_PASSWORD_AUTH / SRP)."
-  value       = aws_cognito_user_pool_client.humans.id
-}
-
-output "automation_client_id" {
-  description = "App client for machines (OAuth2 client_credentials). Secret: see automation_client_secret."
-  value       = aws_cognito_user_pool_client.machines.id
-}
+output "api_url" { value = module.netloom.api_url }
+output "user_pool_id" { value = module.netloom.user_pool_id }
+output "user_client_id" { value = module.netloom.user_client_id }
+output "automation_client_id" { value = module.netloom.automation_client_id }
+output "token_url" { value = module.netloom.token_url }
+output "oauth_scope" { value = module.netloom.oauth_scope }
+output "api_function_name" { value = module.netloom.api_function_name }
+output "state_machine_arn" { value = module.netloom.state_machine_arn }
+output "table_name" { value = module.netloom.table_name }
+output "region" { value = module.netloom.region }
 
 output "automation_client_secret" {
-  value     = aws_cognito_user_pool_client.machines.client_secret
+  value     = module.netloom.automation_client_secret
   sensitive = true
-}
-
-output "token_url" {
-  description = "OAuth2 token endpoint for the client_credentials flow."
-  value       = "https://${aws_cognito_user_pool_domain.oauth.domain}.auth.${var.region}.amazoncognito.com/oauth2/token"
-}
-
-output "oauth_scope" {
-  value = "${aws_cognito_resource_server.api.identifier}/api"
-}
-
-output "state_machine_arn" {
-  value = aws_sfn_state_machine.lifecycle.arn
-}
-
-output "table_name" {
-  value = aws_dynamodb_table.ledger.name
-}
-
-output "region" {
-  value = var.region
 }

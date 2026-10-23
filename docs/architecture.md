@@ -60,6 +60,7 @@ sequenceDiagram
 | Optimistic status transitions (`ConditionExpression status IN (...)`) | Locks | Prevents double-delete and delete-while-provisioning with a single conditional write. |
 | Tag-conditioned IAM | `ec2:*` | The worker can't modify or delete VPCs it didn't create. |
 | Terraform + S3 native lockfile + GitHub OIDC | SAM/CDK; DynamoDB lock table; stored access keys | Terraform was requested, native locking removes a table, and OIDC means no long-lived credentials exist anywhere. |
+| One Terraform module, two roots (`app` → AWS, `localstack` → emulator) | Override files; copying the stack | The emulator runs the exact resources that ship, and no override can leak into a real deploy. The `enable_edge` flag drops only Cognito and API Gateway, which free emulators lack |
 | No third-party runtime dependencies | FastAPI/Powertools/Pydantic | The zip is tens of KB, cold starts are faster, and there are no layers or supply-chain surface to manage. |
 
 ## Failure handling

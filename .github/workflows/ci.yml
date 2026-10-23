@@ -33,12 +33,44 @@ jobs:
         with:
           terraform_version: 1.13.3
       - run: terraform fmt -check -recursive infra
-      - name: Validate + contract tests (mock providers, no AWS)
-        working-directory: infra/app
+      - name: Module contract tests (mock providers, no AWS)
+        working-directory: infra/modules/netloom
+        run: terraform init -input=false && terraform validate && terraform test
+      - name: Validate root stacks
         run: |
-          terraform init -backend=false -input=false
-          terraform validate
-          terraform test
-      - name: Validate bootstrap
-        working-directory: infra/bootstrap
-        run: terraform init -backend=false -input=false && terraform validate
+          for root in app localstack bootstrap; do
+            terraform -chdir=infra/$root init -backend=false -input=false >/dev/null
+            terraform -chdir=infra/$root validate
+          done
+
+  localstack-e2e:
+    # Deploys the real Terraform stack into LocalStack and runs the full
+    # create -> retrieve -> delete flow. Enabled when the repository secret
+    # LOCALSTACK_AUTH_TOKEN is set (free Hobby plan is enough).
+    runs-on: ubuntu-latest
+    needs: [python, terraform]
+    env:
+      LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+    steps:
+      - name: Check for token
+        id: gate
+        run: echo "enabled=${{ env.LOCALSTACK_AUTH_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        if: steps.gate.outputs.enabled == 'true'
+      - uses: actions/setup-python@v6
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          python-version: "3.13"
+      - uses: hashicorp/setup-terraform@v3
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Start LocalStack, deploy, smoke test
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          pip install boto3
+          make local-e2e
+      - name: LocalStack logs on failure
+        if: failure() && steps.gate.outputs.enabled == 'true'
+        run: docker logs netloom-localstack | tail -200

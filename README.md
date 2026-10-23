@@ -16,6 +16,7 @@ GET  /v1/networks/{id}                          ◄──  AVAILABLE, with every
 | Authentication layer | Amazon Cognito user pool. API Gateway verifies the JWT before any code runs |
 | Authorization open to all authenticated users | One JWT authorizer, no scopes or ownership checks. Writes still record *who* did them |
 | Bonus: automation | Terraform for all infrastructure, a bootstrap stack for remote state and GitHub OIDC, and CI/CD that tests, deploys and health-checks |
+| Local emulation | The same Terraform module deploys to **LocalStack**: `make local-e2e` runs create → retrieve → delete end to end with no AWS account |
 
 ---
 
@@ -142,15 +143,18 @@ src/netloom/
   provisioner.py   Step Functions worker: idempotent EC2 steps, tag discovery, rollback
   web.py ids.py errors.py
 infra/
+  modules/netloom/ the stack itself: Cognito, HTTP API, Lambdas, Step Functions, DynamoDB, IAM
+  modules/netloom/tests/  terraform test contract tests (mock providers, offline)
+  app/             root for real AWS: provider, S3 backend, module call
+  localstack/      root for LocalStack: endpoint overrides, local state, docker-compose.yml
   bootstrap/       one-time: S3 state bucket (native locking) + GitHub OIDC deploy role
-  app/             the stack: Cognito, HTTP API, Lambdas, Step Functions, DynamoDB, IAM
-  app/tests/       terraform test contract tests (mock providers, offline)
 scripts/
   netloom_auth.py  add users, sign in, machine tokens (reads terraform outputs)
   smoke_test.sh    end-to-end demo against a live deployment
+  local_smoke.py   end-to-end run against the LocalStack deployment
 tests/             pytest + moto: planner, API, full lifecycle against mocked EC2
 docs/              architecture & decisions, OpenAPI 3.1 spec
-.github/workflows  ci.yml (lint, tests, tf validate/test) · deploy.yml (OIDC → plan → apply → health check)
+.github/workflows  ci.yml (lint, tests, tf validate/test, LocalStack e2e) · deploy.yml (OIDC → plan → apply → health check)
 ```
 
 ---
@@ -165,8 +169,35 @@ You need Python ≥ 3.12, Terraform ≥ 1.10, AWS credentials with admin rights 
 
 ```bash
 make install     # pip install -r requirements-dev.txt
-make check       # ruff + 33 pytest tests (moto) + terraform validate + terraform test
+make check       # ruff + 33 pytest tests (moto) + terraform validate (all roots) + terraform test
 ```
+
+### 1b. Run the real stack on LocalStack (Docker, no AWS account)
+
+`infra/localstack` deploys the **same Terraform module** that goes to AWS. It points every AWS provider endpoint at `http://localhost:4566`, uses local state and fake credentials, and can't touch a real account.
+
+```bash
+export LOCALSTACK_AUTH_TOKEN=...   # free Hobby plan: app.localstack.cloud → Auth Tokens
+make local-e2e                     # local-up + local-deploy + local-smoke
+make local-down                    # stop it and forget everything
+```
+
+`local-smoke` drives the deployed artefacts end to end. It creates a network, then:
+
+- checks the VPC and subnets really exist in emulated EC2;
+- retrieves the stored data;
+- replays a request with the same idempotency key;
+- has a second user read and delete the network;
+- prints the audit trail.
+
+The API Lambda, Step Functions workflow, worker Lambda, DynamoDB and EC2 all run inside LocalStack.
+
+**What's emulated differently.** LocalStack's free tier has no Cognito and no API Gateway v2. So the local stack sets `enable_edge = false`, which skips those resources, and the smoke script plays API Gateway's role: it invokes the API Lambda with the exact payload-v2 event API Gateway sends, including the verified JWT claims. Token verification itself is covered by the module's contract tests and by the smoke test on real AWS. If your LocalStack plan includes those services, run `terraform -chdir=infra/localstack apply -var enable_edge=true` to deploy the full edge too.
+
+Notes:
+
+- Since LocalStack 2026.03 the image needs an auth token to start. To try it without one, use the last token-free Community build: `LOCALSTACK_IMAGE=localstack/localstack:4.14 make local-e2e`.
+- CI runs the same `make local-e2e` when the repository secret `LOCALSTACK_AUTH_TOKEN` is set.
 
 ### 2a. Deploy from your machine
 

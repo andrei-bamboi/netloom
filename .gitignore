@@ -10,6 +10,6 @@ __pycache__/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
-infra/app/.build/
+.build/
 infra/app/backend.hcl
 crash.log
