@@ -25,6 +25,14 @@ def respond(status: int, body: object | None = None, headers: dict | None = None
     return out
 
 
+def respond_text(status: int, body: str, content_type: str, cache_seconds: int = 300) -> dict:
+    return {
+        "statusCode": status,
+        "headers": {"content-type": content_type, "cache-control": f"public, max-age={cache_seconds}"},
+        "body": body,
+    }
+
+
 def json_body(event: dict) -> object:
     raw = event.get("body") or ""
     if event.get("isBase64Encoded"):

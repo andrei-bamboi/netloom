@@ -2,6 +2,8 @@ locals {
   # routeKey => requires a JWT?  Mirrors ROUTES in src/netloom/api.py.
   routes = {
     "GET /v1/health"                = false
+    "GET /v1/openapi.json"          = false
+    "GET /docs"                     = false
     "GET /v1/me"                    = true
     "POST /v1/plans"                = true
     "POST /v1/networks"             = true

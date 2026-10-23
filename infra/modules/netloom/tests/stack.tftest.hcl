@@ -21,20 +21,22 @@ mock_provider "aws" {
 
 mock_provider "random" {}
 
-run "routes_are_protected_except_health" {
+run "routes_are_protected_except_health_and_docs" {
   command = plan
 
   assert {
-    condition     = length(aws_apigatewayv2_route.this) == 9
+    condition     = length(aws_apigatewayv2_route.this) == 11
     error_message = "Unexpected number of routes."
   }
   assert {
-    condition     = aws_apigatewayv2_route.this["GET /v1/health"].authorization_type == "NONE"
-    error_message = "Health must be public."
+    condition = alltrue([
+      for k in ["GET /v1/health", "GET /v1/openapi.json", "GET /docs"] : aws_apigatewayv2_route.this[k].authorization_type == "NONE"
+    ])
+    error_message = "Health and documentation must be public."
   }
   assert {
     condition = alltrue([
-      for k, r in aws_apigatewayv2_route.this : r.authorization_type == "JWT" if k != "GET /v1/health"
+      for k, r in aws_apigatewayv2_route.this : r.authorization_type == "JWT" if !contains(["GET /v1/health", "GET /v1/openapi.json", "GET /docs"], k)
     ])
     error_message = "Every other route must require a JWT."
   }

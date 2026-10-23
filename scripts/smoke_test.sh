@@ -29,6 +29,10 @@ wait_for() { # $1 = id, $2 = wanted status
 step "health (public)"
 curl -fsS "${API_URL}/v1/health" | jq .
 
+step "API documentation (public)"
+curl -fsS "${API_URL}/v1/openapi.json" | jq -r '"   \(.info.title) \(.info.version) - \(.paths | length) paths"'
+curl -fsS -o /dev/null -w '   Swagger UI %{http_code}: '"${API_URL}"'/docs\n' "${API_URL}/docs"
+
 step "request without a token is rejected"
 code=$(curl -s -o /dev/null -w '%{http_code}' "${API_URL}/v1/networks")
 [[ "$code" == "401" ]] && echo "   401 as expected" || { echo "expected 401, got $code"; exit 1; }

@@ -20,11 +20,11 @@ from functools import lru_cache
 import boto3
 from botocore.exceptions import ClientError
 
-from . import __version__, store
+from . import __version__, docs, store
 from .errors import BadRequest, NetloomError, NotFound, ValidationFailed
 from .ids import is_network_id, new_network_id
 from .planner import build_plan
-from .web import actor, header, json_body, log, path_param, query, respond
+from .web import actor, header, json_body, log, path_param, query, respond, respond_text
 
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,64}$")
 STATUSES = {"QUEUED", "PROVISIONING", "AVAILABLE", "FAILED", "DECOMMISSIONING", "DELETED"}
@@ -79,6 +79,14 @@ def _start_workflow(network_id: str, operation: str, suffix: str) -> str:
 
 def health(_event: dict, _who: dict | None) -> dict:
     return respond(200, {"status": "ok", "version": __version__})
+
+
+def openapi_spec(_event: dict, _who: dict | None) -> dict:
+    return respond_text(200, json.dumps(docs.openapi_document()), "application/json")
+
+
+def swagger_ui(_event: dict, _who: dict | None) -> dict:
+    return respond_text(200, docs.SWAGGER_HTML, "text/html; charset=utf-8")
 
 
 def whoami(_event: dict, who: dict) -> dict:
@@ -170,6 +178,8 @@ Handler = Callable[[dict, dict], dict]
 ROUTES: dict[str, tuple[Handler, bool]] = {
     # routeKey: (handler, requires_identity)
     "GET /v1/health": (health, False),
+    "GET /v1/openapi.json": (openapi_spec, False),
+    "GET /docs": (swagger_ui, False),
     "GET /v1/me": (whoami, True),
     "POST /v1/plans": (plan_network, True),
     "POST /v1/networks": (create_network, True),

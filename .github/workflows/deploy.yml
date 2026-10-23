@@ -80,7 +80,10 @@ jobs:
         run: |
           url=$(terraform output -raw api_url)
           curl -fsS --retry 5 --retry-delay 3 "${url%/}/v1/health"
+          curl -fsS "${url%/}/v1/openapi.json" | jq -e '.openapi' >/dev/null
+          curl -fsS -o /dev/null "${url%/}/docs"
           code=$(curl -s -o /dev/null -w '%{http_code}' "${url%/}/v1/networks")
           test "$code" = "401" || { echo "expected 401 without token, got $code"; exit 1; }
           echo "### Deployed :rocket:" >> "$GITHUB_STEP_SUMMARY"
           echo "API: ${url}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Swagger UI: ${url%/}/docs" >> "$GITHUB_STEP_SUMMARY"

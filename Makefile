@@ -5,7 +5,7 @@ TFM   := terraform -chdir=infra/modules/netloom
 COMPOSE := docker compose -f infra/localstack/docker-compose.yml
 
 .PHONY: help install lint fmt test tf-test check bootstrap init plan deploy destroy outputs user token smoke \
-        local-up local-deploy local-smoke local-e2e local-destroy local-down
+        openapi local-up local-deploy local-smoke local-e2e local-gateway local-destroy local-down
 
 help: ## list targets
 	@grep -E '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -30,6 +30,9 @@ tf-test: ## terraform validate (all roots) + offline module contract tests (mock
 	$(TFL) init -input=false >/dev/null && $(TFL) validate
 
 check: lint test tf-test ## everything CI runs
+
+openapi: ## rebuild src/netloom/openapi.json from docs/openapi.yaml (served at /v1/openapi.json)
+	python3 scripts/build_openapi.py
 
 bootstrap: ## one-time: state bucket + GitHub OIDC deploy role (needs REPO=owner/name)
 	@test -n "$(REPO)" || (echo "usage: make bootstrap REPO=owner/name" && exit 1)
@@ -75,6 +78,9 @@ local-smoke: ## end-to-end: plan, create, poll, verify EC2, retrieve, delete
 	python3 scripts/local_smoke.py
 
 local-e2e: local-up local-deploy local-smoke ## all of the above in one go
+
+local-gateway: ## API Gateway stand-in on :8080 -> Swagger UI at http://localhost:8080/docs
+	python3 scripts/local_gateway.py
 
 local-destroy: ## remove the stack from LocalStack
 	$(TFL) destroy -auto-approve -input=false

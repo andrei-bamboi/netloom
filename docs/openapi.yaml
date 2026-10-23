@@ -6,7 +6,7 @@ info:
     Asynchronous API that provisions AWS VPCs with multiple subnets and keeps a
     queryable record of everything it created.
 
-    **Authentication** - every operation except `GET /v1/health` requires a
+    **Authentication** - every operation except `GET /v1/health` and the docs requires a
     Cognito access token: `Authorization: Bearer <token>`.
     **Authorization** - any authenticated principal may call any operation.
 servers:
@@ -14,13 +14,25 @@ servers:
     variables:
       api_url:
         default: https://example.execute-api.eu-central-1.amazonaws.com
+tags:
+  - name: networks
+    description: Create, inspect and tear down VPCs
+  - name: planning
+    description: Dry-run CIDR planning
+  - name: system
+    description: Health and identity
+  - name: docs
+    description: This documentation
+
 security:
   - cognito: []
 
 paths:
   /v1/health:
     get:
+      operationId: getHealth
       summary: Liveness probe (public)
+      tags: [system]
       security: []
       responses:
         "200":
@@ -29,9 +41,35 @@ paths:
             application/json:
               example: { status: ok, version: 1.0.0 }
 
+  /v1/openapi.json:
+    get:
+      operationId: getOpenApi
+      summary: This OpenAPI document (public)
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: OpenAPI 3.1 document. `servers` is set to the host that served it.
+          content:
+            application/json: {}
+
+  /docs:
+    get:
+      operationId: getSwaggerUi
+      summary: Swagger UI (public)
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Interactive documentation page
+          content:
+            text/html: {}
+
   /v1/me:
     get:
+      operationId: getMe
       summary: Echo the authenticated identity
+      tags: [system]
       responses:
         "200":
           description: Caller identity derived from the verified JWT
@@ -42,7 +80,9 @@ paths:
 
   /v1/plans:
     post:
+      operationId: planNetwork
       summary: Dry-run - validate a definition and show the computed subnets
+      tags: [planning]
       description: Nothing is created and nothing is stored.
       requestBody: { $ref: "#/components/requestBodies/NetworkDefinition" }
       responses:
@@ -60,7 +100,9 @@ paths:
 
   /v1/networks:
     post:
+      operationId: createNetwork
       summary: Request a new VPC with subnets
+      tags: [networks]
       description: |
         Returns immediately with `202 Accepted` and status `QUEUED`. A Step
         Functions workflow then creates the VPC, subnets and (for public tiers)
@@ -86,7 +128,9 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Invalid" }
     get:
+      operationId: listNetworks
       summary: List networks, newest first
+      tags: [networks]
       parameters:
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
         - { name: cursor, in: query, schema: { type: string }, description: "`next_cursor` from the previous page" }
@@ -107,7 +151,9 @@ paths:
   /v1/networks/{id}:
     parameters: [{ $ref: "#/components/parameters/NetworkId" }]
     get:
+      operationId: getNetwork
       summary: Get one network including its subnets
+      tags: [networks]
       responses:
         "200":
           description: The network
@@ -117,7 +163,9 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
     delete:
+      operationId: deleteNetwork
       summary: Tear the network down
+      tags: [networks]
       description: Allowed when the network is AVAILABLE or FAILED. The record is kept with status DELETED for auditing.
       responses:
         "202":
@@ -132,7 +180,9 @@ paths:
   /v1/networks/{id}/subnets:
     parameters: [{ $ref: "#/components/parameters/NetworkId" }]
     get:
+      operationId: listSubnets
       summary: List the network's subnets
+      tags: [networks]
       responses:
         "200":
           description: Subnets
@@ -148,7 +198,9 @@ paths:
   /v1/networks/{id}/events:
     parameters: [{ $ref: "#/components/parameters/NetworkId" }]
     get:
+      operationId: listEvents
       summary: Audit trail - who did what, and what the workflow did
+      tags: [networks]
       responses:
         "200":
           description: Events, oldest first

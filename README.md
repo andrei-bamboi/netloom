@@ -68,10 +68,25 @@ More detail and the trade-offs are in [docs/architecture.md](docs/architecture.m
 
 ## API
 
-Full contract: [docs/openapi.yaml](docs/openapi.yaml).
+Full contract: [docs/openapi.yaml](docs/openapi.yaml). **Swagger UI** is served by every deployment at **`<api_url>/docs`**.
+
+![Swagger UI](docs/swagger-ui.png)
+
+How the documentation stays honest:
+
+- `docs/openapi.yaml` is the source you edit. `make openapi` compiles it to `src/netloom/openapi.json`, which ships inside the Lambda. The Lambda runtime has no YAML parser, so the API serves the compiled JSON.
+- The API serves the spec with a relative server URL (`/`), so "Try it out" always calls the host that served it: API Gateway, a custom domain, or the local gateway.
+- `tests/test_openapi.py` fails if:
+  - the spec isn't valid OpenAPI 3.1;
+  - the compiled JSON is stale;
+  - the routes in the **spec, the Python route table and Terraform** aren't identical;
+  - any of those three disagree about which routes are public;
+  - an operation is missing an `operationId`, tag or summary.
 
 | Method & path | Auth | Purpose |
 |---|---|---|
+| `GET /docs` | public | **Swagger UI**: interactive docs, with *Authorize* → paste token → *Try it out* |
+| `GET /v1/openapi.json` | public | the OpenAPI 3.1 document Swagger UI reads |
 | `GET /v1/health` | public | liveness |
 | `GET /v1/me` | JWT | shows the identity the API sees (useful in the auth demo) |
 | `POST /v1/plans` | JWT | **dry run**: validates a definition and returns the computed subnets without creating anything |
@@ -197,6 +212,8 @@ make local-down                    # stop it and forget everything
 The API Lambda, Step Functions workflow, worker Lambda, DynamoDB and EC2 all run inside LocalStack.
 
 **What's emulated differently.** LocalStack's free tier has no Cognito and no API Gateway v2. So the local stack sets `enable_edge = false`, which skips those resources, and the smoke script plays API Gateway's role: it invokes the API Lambda with the exact payload-v2 event API Gateway sends, including the verified JWT claims. Token verification itself is covered by the module's contract tests and by the smoke test on real AWS. If your LocalStack plan includes those services, run `terraform -chdir=infra/localstack apply -var enable_edge=true` to deploy the full edge too.
+
+**Swagger UI locally.** `make local-gateway` starts a small stand-in for API Gateway on `:8080`. It forwards each HTTP request to the deployed API Lambda in LocalStack and emulates the JWT authorizer with dev tokens: `Bearer local-<name>` is accepted, and a missing or invalid token gets `401`. Open <http://localhost:8080/docs>, click *Authorize*, enter `local-alice`, and every operation can be tried against the emulated stack. This is a development aid, not a security boundary.
 
 Notes:
 
