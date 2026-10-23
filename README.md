@@ -1,6 +1,6 @@
 # netloom
 
-An authenticated REST API that **creates AWS VPCs with multiple subnets**, **records every resource it creates**, and lets any signed-in user **retrieve** that data later. It's written in Python and runs entirely on AWS serverless services. Terraform and GitHub Actions deploy it with no stored AWS keys.
+An authenticated REST API that **creates AWS VPCs with multiple subnets**, **records every resource it creates**, and lets any signed-in user **retrieve** that data later. It's written in Python and runs entirely on AWS serverless services. The same Terraform module deploys it to **LocalStack** on your laptop, with no AWS account, or to real AWS through GitHub Actions with no stored keys.
 
 ```
 POST /v1/networks  ──►  202 Accepted (QUEUED)  ──►  Step Functions builds VPC + subnets + IGW
@@ -16,7 +16,7 @@ GET  /v1/networks/{id}                          ◄──  AVAILABLE, with every
 | Authentication layer | Amazon Cognito user pool. API Gateway verifies the JWT before any code runs |
 | Authorization open to all authenticated users | One JWT authorizer, no scopes or ownership checks. Writes still record *who* did them |
 | Bonus: automation | Terraform for all infrastructure, a bootstrap stack for remote state and GitHub OIDC, and CI/CD that tests, deploys and health-checks |
-| Local emulation | The same Terraform module deploys to **LocalStack**: `make local-e2e` runs create → retrieve → delete end to end with no AWS account |
+| Local emulation | The same Terraform module deploys to **LocalStack**. `make local-e2e` runs create → retrieve → delete end to end, and `make local-gateway` serves Swagger UI on `localhost:8080`, all without an AWS account |
 
 ---
 
@@ -156,122 +156,231 @@ Zones `a`–`f` are *logical*. They map onto the region's available AZs in sorte
 
 ```
 src/netloom/
-  api.py           HTTP handler: routing by routeKey, validation, idempotency, 202 flow
-  planner.py       pure CIDR planning/validation (also powers the dry-run)
-  store.py         DynamoDB single-table repository, optimistic status transitions
-  provisioner.py   Step Functions worker: idempotent EC2 steps, tag discovery, rollback
+  api.py            HTTP handler: routing by routeKey, validation, idempotency, 202 flow
+  planner.py        pure CIDR planning/validation (also powers the dry-run)
+  store.py          DynamoDB single-table repository, optimistic status transitions
+  provisioner.py    Step Functions worker: idempotent EC2 steps, tag discovery, rollback
+  docs.py           Swagger UI page + OpenAPI document endpoints
+  openapi.json      compiled from docs/openapi.yaml (make openapi), shipped in the Lambda
   web.py ids.py errors.py
 infra/
-  modules/netloom/ the stack itself: Cognito, HTTP API, Lambdas, Step Functions, DynamoDB, IAM
-  modules/netloom/tests/  terraform test contract tests (mock providers, offline)
-  app/             root for real AWS: provider, S3 backend, module call
-  localstack/      root for LocalStack: endpoint overrides, local state, docker-compose.yml
-  bootstrap/       one-time: S3 state bucket (native locking) + GitHub OIDC deploy role
+  modules/netloom/  the stack itself: Cognito, HTTP API, Lambdas, Step Functions, DynamoDB, IAM
+    tests/          terraform test contract tests (mock providers, offline)
+  localstack/       root for LocalStack: endpoint overrides, local state, docker-compose.yml
+  app/              root for real AWS: provider, S3 backend, module call
+  bootstrap/        one-time AWS setup: S3 state bucket + GitHub OIDC deploy role
 scripts/
-  netloom_auth.py  add users, sign in, machine tokens (reads terraform outputs)
-  smoke_test.sh    end-to-end demo against a live deployment
-  local_smoke.py   end-to-end run against the LocalStack deployment
-tests/             pytest + moto: planner, API, full lifecycle against mocked EC2
-docs/              architecture & decisions, OpenAPI 3.1 spec
-.github/workflows  ci.yml (lint, tests, tf validate/test, LocalStack e2e) · deploy.yml (OIDC → plan → apply → health check)
+  local_smoke.py    end-to-end run against the LocalStack deployment
+  local_gateway.py  API Gateway stand-in for LocalStack (Swagger UI on :8080, dev tokens)
+  build_openapi.py  docs/openapi.yaml -> src/netloom/openapi.json
+  netloom_auth.py   AWS only: add users, sign in, machine tokens (reads terraform outputs)
+  smoke_test.sh     AWS only: end-to-end demo against a live deployment
+tests/              pytest + moto: planner, API, workflow, OpenAPI contract (40 tests)
+docs/               architecture & decisions, diagram, OpenAPI 3.1 spec
+.github/workflows   ci.yml (lint, tests, tf validate/test, LocalStack e2e) · deploy.yml (AWS)
 ```
 
 ---
 
-## Running it
+## Quick start: run everything locally on LocalStack
+
+No AWS account is needed. Terraform deploys the **same module** that would go to AWS into LocalStack, then you drive it through Swagger UI or `curl`.
 
 ### Prerequisites
 
-You need Python ≥ 3.12, Terraform ≥ 1.10, AWS credentials with admin rights for the one-time bootstrap, and `jq`/`curl` for the smoke test.
+| Tool | Version | Notes |
+|---|---|---|
+| Python | **3.12+** (3.13 recommended) | macOS's built-in `python3` (Xcode, 3.9) is too old: `brew install python@3.13` |
+| Terraform | 1.10+ | `brew install terraform` |
+| Docker | Docker Desktop running | LocalStack runs each Lambda in its own container through the Docker socket |
+| LocalStack | free auth token **or** the 4.14 image | see step 2 |
+| `curl`, `jq` | any | only for the curl examples |
 
-### 1. Test locally (no AWS account needed)
-
-```bash
-make install     # pip install -r requirements-dev.txt
-make check       # ruff + 33 pytest tests (moto) + terraform validate (all roots) + terraform test
-```
-
-### 1b. Run the real stack on LocalStack (Docker, no AWS account)
-
-`infra/localstack` deploys the **same Terraform module** that goes to AWS. It points every AWS provider endpoint at `http://localhost:4566`, uses local state and fake credentials, and can't touch a real account.
+### 1. Set up Python
 
 ```bash
-export LOCALSTACK_AUTH_TOKEN=...   # free Hobby plan: app.localstack.cloud → Auth Tokens
-make local-e2e                     # local-up + local-deploy + local-smoke
-make local-down                    # stop it and forget everything
+python3.13 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+make check          # optional: lint + 40 pytest tests + terraform validate/test, all offline
 ```
 
-`local-smoke` drives the deployed artefacts end to end. It creates a network, then:
+### 2. Choose the LocalStack image
 
-- checks the VPC and subnets really exist in emulated EC2;
-- retrieves the stored data;
+```bash
+# Option A: current LocalStack (2026.03+ needs a token; the free Hobby plan is enough)
+export LOCALSTACK_AUTH_TOKEN=...            # app.localstack.cloud → Auth Tokens
+
+# Option B: last Community build, needs no token
+export LOCALSTACK_IMAGE=localstack/localstack:4.14
+```
+
+### 3. Deploy and test end to end
+
+```bash
+make local-e2e      # = local-up (start LocalStack) + local-deploy (terraform apply) + local-smoke
+```
+
+`local-smoke` creates a network, then:
+
+- waits for the workflow to reach `AVAILABLE`;
+- checks that the VPC and subnets really exist in emulated EC2;
+- reads back the stored data;
 - replays a request with the same idempotency key;
 - has a second user read and delete the network;
 - prints the audit trail.
 
 The API Lambda, Step Functions workflow, worker Lambda, DynamoDB and EC2 all run inside LocalStack.
 
-**What's emulated differently.** LocalStack's free tier has no Cognito and no API Gateway v2. So the local stack sets `enable_edge = false`, which skips those resources, and the smoke script plays API Gateway's role: it invokes the API Lambda with the exact payload-v2 event API Gateway sends, including the verified JWT claims. Token verification itself is covered by the module's contract tests and by the smoke test on real AWS. If your LocalStack plan includes those services, run `terraform -chdir=infra/localstack apply -var enable_edge=true` to deploy the full edge too.
-
-**Swagger UI locally.** `make local-gateway` starts a small stand-in for API Gateway on `:8080`. It forwards each HTTP request to the deployed API Lambda in LocalStack and emulates the JWT authorizer with dev tokens: `Bearer local-<name>` is accepted, and a missing or invalid token gets `401`. Open <http://localhost:8080/docs>, click *Authorize*, enter `local-alice`, and every operation can be tried against the emulated stack. This is a development aid, not a security boundary.
-
-Notes:
-
-- Since LocalStack 2026.03 the image needs an auth token to start. To try it without one, use the last token-free Community build: `LOCALSTACK_IMAGE=localstack/localstack:4.14 make local-e2e`.
-- CI runs the same `make local-e2e` when the repository secret `LOCALSTACK_AUTH_TOKEN` is set.
-
-### 2a. Deploy from your machine
+### 4. Swagger UI
 
 ```bash
-make bootstrap REPO=<owner>/<repo>    # state bucket + OIDC role; writes infra/app/backend.hcl
-make init
-cp infra/app/terraform.tfvars.example infra/app/terraform.tfvars   # edit region / invited users
-make deploy
-make outputs
+make local-gateway  # keep it running → http://localhost:8080/docs
 ```
 
-### 2b. Deploy via GitHub Actions
+1. Open <http://localhost:8080/docs>.
+2. Click **Authorize** and enter `local-alice`.
+3. Use **Try it out** on `POST /v1/networks`, then on `GET /v1/networks/{id}` with the returned id.
+4. Authorize as `local-bob` to show that any authenticated user can read or delete Alice's network.
 
-1. Run `make bootstrap REPO=<owner>/<repo>` once. It prints `deploy_role_arn` and `state_bucket`.
-2. In GitHub, create an environment named **`aws`**. You can add required reviewers to it.
-3. Add these repository variables: `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION`, `TF_STATE_BUCKET`, and optionally `NETLOOM_INVITED_USERS`, e.g. `["reviewer@example.com"]`.
-4. Push to `main`. The workflow runs CI → `terraform plan` → `apply` → health check, and checks that requests without a token get `401`.
-
-### 3. Use it
+### 5. Or with curl
 
 ```bash
-make user EMAIL=me@example.com                 # create a user (asks for a password)
-export API=$(terraform -chdir=infra/app output -raw api_url)
-export TOKEN=$(python scripts/netloom_auth.py login --email me@example.com)
+API=http://localhost:8080
+AUTH='Authorization: Bearer local-alice'
 
-curl -s $API/v1/networks -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: demo-0001' \
-  -d '{"name":"demo","cidr":"10.42.0.0/16","layout":{"tiers":["public","private"],"zones":2,"prefix":24}}' | jq
+curl -s -w ' %{http_code}\n' $API/v1/networks                       # → {"message":"Unauthorized"} 401
+curl -s -H "$AUTH" $API/v1/me | jq                                   # who the API thinks you are
 
-curl -s $API/v1/networks/<id>         -H "Authorization: Bearer $TOKEN" | jq
-curl -s $API/v1/networks/<id>/subnets -H "Authorization: Bearer $TOKEN" | jq
-curl -s $API/v1/networks/<id>/events  -H "Authorization: Bearer $TOKEN" | jq
+curl -s -H "$AUTH" -H 'Content-Type: application/json' $API/v1/plans \
+  -d '{"name":"demo","cidr":"10.42.0.0/16","layout":{"tiers":["public","private"],"zones":2,"prefix":24}}' | jq .plan.subnets
+
+ID=$(curl -s -H "$AUTH" -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-0001' $API/v1/networks \
+  -d '{"name":"demo","cidr":"10.42.0.0/16","layout":{"tiers":["public","private"],"zones":2,"prefix":24}}' | jq -r .id)
+
+curl -s -H "$AUTH" $API/v1/networks/$ID | jq '{status, vpc_id, internet_gateway_id}'   # QUEUED → … → AVAILABLE
+curl -s -H "$AUTH" $API/v1/networks/$ID/subnets | jq -r '.items[] | [.name,.cidr,.availability_zone,.subnet_id] | @tsv'
+curl -s -H "$AUTH" $API/v1/networks/$ID/events  | jq -r '.items[] | [.type,.actor.username,.message] | @tsv'
+curl -s -H 'Authorization: Bearer local-bob' -X DELETE $API/v1/networks/$ID | jq .status   # → DECOMMISSIONING
 ```
 
-Or run the whole flow end to end: `make smoke EMAIL=me@example.com`.
+To check the resources directly in emulated EC2, always pass fake credentials so the AWS CLI can't fall back to a real profile:
 
-For machines: `TOKEN=$(python scripts/netloom_auth.py machine-token)`.
+```bash
+AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=eu-central-1 \
+  aws --endpoint-url http://localhost:4566 ec2 describe-subnets \
+  --filters Name=tag:netloom:network-id,Values=$ID --query 'Subnets[].[CidrBlock,AvailabilityZone,SubnetId]' --output table
+```
 
-### 4. Clean up
+### 6. Stop
 
-`DELETE` every network through the API first. Terraform doesn't own those VPCs. Then run `make destroy`.
+```bash
+make local-down     # stops LocalStack and deletes its state; nothing persists
+```
+
+### What's different from AWS
+
+LocalStack's free tier has no **Cognito** and no **API Gateway v2**. So `infra/localstack` sets `enable_edge = false`, which deploys everything except those two.
+
+`local-gateway` takes their place:
+
+- it maps each HTTP request to the route, the same way API Gateway does;
+- it invokes the deployed API Lambda with the identical payload-v2 event;
+- it emulates the JWT authorizer with **dev tokens**: `Bearer local-<name>` is accepted, and anything else on a protected route gets `401`.
+
+This is a development aid, not a security boundary. Real token verification is configured in Terraform and covered by the module's contract tests. If your LocalStack plan includes Cognito and API Gateway v2, run `terraform -chdir=infra/localstack apply -var enable_edge=true` to deploy them too.
+
+### Safety: LocalStack never touches AWS
+
+The LocalStack stack:
+
+- hard-codes fake credentials (`test`/`test`);
+- points every AWS endpoint at `http://localhost:4566`;
+- keeps its state in a local file.
+
+`local_smoke.py` and `local_gateway.py` do the same. So even if your shell's default AWS profile points at a real account, `make local-*` can't reach it. Still, it's good hygiene not to keep real credentials under `[default]` in `~/.aws/credentials`.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `ImportError: cannot import name 'UTC' from 'datetime'` or other import errors | Your venv uses an old Python (macOS default 3.9). Recreate it with `python3.13 -m venv .venv` |
+| `make: *** No rule to make target 'local-e2e'` | You're on an old checkout. Pull the latest `main` |
+| LocalStack exits right after start / license error | Set `LOCALSTACK_AUTH_TOKEN`, or use `LOCALSTACK_IMAGE=localstack/localstack:4.14` |
+| `port is already allocated` (4566 or 8080) | Another LocalStack or gateway is running: `make local-down`, or `docker ps` and stop it. For the gateway: `python3 scripts/local_gateway.py --port 8081` |
+| `Table already exists` / `ResourceInUse` on deploy | Leftover state from an earlier run: `make local-down && make local-e2e` |
+| Lambda invoke hangs on first call | First run pulls the Lambda runtime image. Give it a minute; later calls are fast |
+| Swagger UI page is blank | It loads its assets from cdn.jsdelivr.net. Check that your network allows it |
+| `curl` to localhost fails behind a corporate proxy | `export NO_PROXY=localhost,127.0.0.1` |
 
 ---
 
-## Demo script (≈10 min)
+## Deploying to real AWS (optional)
 
-1. **Auth.** `curl $API/v1/networks` → `401`. Get a token, then `GET /v1/me`.
-2. **Dry run.** `POST /v1/plans` with a layout and show the carved CIDRs. Then send an overlapping explicit request and show the multi-error `422`.
-3. **Create.** `POST /v1/networks` → `202` with `QUEUED`. Open the Step Functions execution in the console and watch the steps.
-4. **Retrieve.** `GET /v1/networks/{id}` → `AVAILABLE` with `vpc_id`, `subnet_id`s and AZs. Cross-check them in the VPC console. Show `/events`.
-5. **Idempotency.** Repeat the same POST with the same key → same id, `Idempotent-Replayed: true`.
-6. **Open authorization.** Sign in as a second user, list networks, and see the first user's network.
-7. **Teardown.** `DELETE` → `DECOMMISSIONING` → `DELETED`. The VPC is gone and the record and audit trail remain.
+Use an AWS account you control, such as a personal or sandbox account. Before running anything, check which account your terminal will act on:
+
+```bash
+export AWS_PROFILE=<your-profile>
+aws sts get-caller-identity          # make sure this is the account you intend to use
+```
+
+### One-time bootstrap
+
+```bash
+make bootstrap REPO=<github-owner>/<repo>   # e.g. REPO=andreib/netloom
+```
+
+This creates:
+
+- the Terraform state bucket (S3, versioned, with native locking);
+- GitHub's OIDC identity provider;
+- a deploy role that only `main` and the `aws` environment of **that repository** can assume.
+
+It also writes `infra/app/backend.hcl`.
+
+### Deploy from your machine
+
+```bash
+make init
+cp infra/app/terraform.tfvars.example infra/app/terraform.tfvars   # region, invited users
+make deploy && make outputs
+```
+
+### Deploy through GitHub Actions
+
+1. In GitHub, create an environment named **`aws`**. You can add required reviewers to it.
+2. Add these repository variables from the bootstrap output: `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION` and `TF_STATE_BUCKET`. Optionally add `NETLOOM_INVITED_USERS`, e.g. `["reviewer@example.com"]`.
+3. Push to `main`. The workflow runs CI, then `plan`, `apply` and a health check covering `/v1/health`, `/docs`, `/v1/openapi.json` and the unauthenticated `401`.
+
+Without those variables, the `deploy` workflow fails on push. That's expected if you only use LocalStack.
+
+### Use it
+
+```bash
+make user EMAIL=me@example.com                                  # create a Cognito user
+export TOKEN=$(python scripts/netloom_auth.py login --email me@example.com)
+open "$(terraform -chdir=infra/app output -raw api_url)docs"     # Swagger UI → Authorize → paste $TOKEN
+make smoke EMAIL=me@example.com                                 # full end-to-end check
+```
+
+For machines: `TOKEN=$(python scripts/netloom_auth.py machine-token)`.
+
+To clean up, `DELETE` every network through the API first, because Terraform doesn't own those VPCs. Then run `make destroy`.
+
+---
+
+## Demo script (≈10 min, LocalStack)
+
+Start with `make local-e2e`, then keep `make local-gateway` running and open <http://localhost:8080/docs>.
+
+1. **Architecture.** Show `docs/architecture.png`: an asynchronous API, Step Functions with rollback, the DynamoDB ledger, and one Terraform module with two roots.
+2. **Auth.** Before authorizing, run `GET /v1/networks` → `401`. Authorize as `local-alice`, then `GET /v1/me`.
+3. **Dry run.** `POST /v1/plans` with a layout shows the carved CIDRs. An overlapping explicit request returns a `422` listing every problem.
+4. **Create.** `POST /v1/networks` → `202 QUEUED` with a `Location` header.
+5. **Retrieve.** `GET /v1/networks/{id}` → `AVAILABLE` with `vpc_id`, `subnet_id`s and AZs. Cross-check with the `aws --endpoint-url` command above, then show `/events`.
+6. **Idempotency.** Repeat the POST with the same `Idempotency-Key` → same id, `idempotent-replayed: true`.
+7. **Open authorization.** Re-authorize as `local-bob`, list networks, and see Alice's network.
+8. **Teardown.** `DELETE` → `DECOMMISSIONING` → `DELETED`. The VPC is gone; the record and audit trail remain.
+9. **Code quality.** Run `make check`: 40 Python tests, Terraform contract tests, and spec, code and infrastructure checked against each other.
 
 ---
 
