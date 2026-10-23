@@ -1,0 +1,321 @@
+openapi: 3.1.0
+info:
+  title: netloom
+  version: 1.0.0
+  description: |
+    Asynchronous API that provisions AWS VPCs with multiple subnets and keeps a
+    queryable record of everything it created.
+
+    **Authentication** - every operation except `GET /v1/health` requires a
+    Cognito access token: `Authorization: Bearer <token>`.
+    **Authorization** - any authenticated principal may call any operation.
+servers:
+  - url: "{api_url}"
+    variables:
+      api_url:
+        default: https://example.execute-api.eu-central-1.amazonaws.com
+security:
+  - cognito: []
+
+paths:
+  /v1/health:
+    get:
+      summary: Liveness probe (public)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              example: { status: ok, version: 1.0.0 }
+
+  /v1/me:
+    get:
+      summary: Echo the authenticated identity
+      responses:
+        "200":
+          description: Caller identity derived from the verified JWT
+          content:
+            application/json:
+              example: { authenticated: true, sub: 7c1e..., username: alice@example.com, client_id: 4k2... }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/plans:
+    post:
+      summary: Dry-run - validate a definition and show the computed subnets
+      description: Nothing is created and nothing is stored.
+      requestBody: { $ref: "#/components/requestBodies/NetworkDefinition" }
+      responses:
+        "200":
+          description: The computed plan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dry_run: { type: boolean, const: true }
+                  plan: { $ref: "#/components/schemas/Plan" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Invalid" }
+
+  /v1/networks:
+    post:
+      summary: Request a new VPC with subnets
+      description: |
+        Returns immediately with `202 Accepted` and status `QUEUED`. A Step
+        Functions workflow then creates the VPC, subnets and (for public tiers)
+        an internet gateway and route table. Poll the `Location` URL.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Retrying with the same key and body returns the original network instead of creating another. Scoped per user, kept 24h.
+          schema: { type: string, pattern: "^[A-Za-z0-9_.:-]{8,64}$" }
+      requestBody: { $ref: "#/components/requestBodies/NetworkDefinition" }
+      responses:
+        "202":
+          description: Accepted
+          headers:
+            Location: { schema: { type: string }, description: URL of the new network }
+            Idempotent-Replayed: { schema: { type: string }, description: "\"true\" when an earlier result is returned" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Network" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Invalid" }
+    get:
+      summary: List networks, newest first
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: cursor, in: query, schema: { type: string }, description: "`next_cursor` from the previous page" }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/Status" } }
+      responses:
+        "200":
+          description: A page of networks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Network" } }
+                  next_cursor: { type: [string, "null"] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/networks/{id}:
+    parameters: [{ $ref: "#/components/parameters/NetworkId" }]
+    get:
+      summary: Get one network including its subnets
+      responses:
+        "200":
+          description: The network
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Network" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      summary: Tear the network down
+      description: Allowed when the network is AVAILABLE or FAILED. The record is kept with status DELETED for auditing.
+      responses:
+        "202":
+          description: Teardown started (status DECOMMISSIONING)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Network" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /v1/networks/{id}/subnets:
+    parameters: [{ $ref: "#/components/parameters/NetworkId" }]
+    get:
+      summary: List the network's subnets
+      responses:
+        "200":
+          description: Subnets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  network_id: { type: string }
+                  items: { type: array, items: { $ref: "#/components/schemas/Subnet" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/networks/{id}/events:
+    parameters: [{ $ref: "#/components/parameters/NetworkId" }]
+    get:
+      summary: Audit trail - who did what, and what the workflow did
+      responses:
+        "200":
+          description: Events, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  network_id: { type: string }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        at: { type: string, format: date-time }
+                        type: { type: string, examples: [requested, vpc_ready, subnets_ready, available, failed] }
+                        message: { type: string }
+                        actor: { type: object }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    cognito:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    NetworkId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^net-[0-9a-z]{22}$" }
+
+  requestBodies:
+    NetworkDefinition:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/NetworkDefinition" }
+          examples:
+            layout:
+              summary: Auto-carve 2 tiers x 3 zones
+              value:
+                name: payments-dev
+                cidr: 10.20.0.0/16
+                layout: { tiers: [public, private], zones: 3, prefix: 20 }
+                tags: { team: payments }
+            explicit:
+              summary: Explicit subnets
+              value:
+                name: lab
+                cidr: 172.16.0.0/20
+                subnets:
+                  - { name: web, cidr: 172.16.0.0/24, zone: a, tier: public }
+                  - { name: db-a, cidr: 172.16.8.0/23, zone: a, tier: private }
+                  - { name: db-b, cidr: 172.16.10.0/23, zone: b, tier: private }
+
+  schemas:
+    Status:
+      type: string
+      enum: [QUEUED, PROVISIONING, AVAILABLE, FAILED, DECOMMISSIONING, DELETED]
+
+    NetworkDefinition:
+      type: object
+      required: [name, cidr]
+      description: Provide exactly one of `subnets` or `layout`.
+      properties:
+        name: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$" }
+        cidr: { type: string, description: "RFC 1918 IPv4 block, /16 to /28", examples: [10.20.0.0/16] }
+        tags:
+          type: object
+          additionalProperties: { type: string, maxLength: 256 }
+          maxProperties: 20
+          description: 'Copied onto every AWS resource. Keys starting with aws: or netloom: and the key "Name" are reserved.'
+        subnets:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            type: object
+            required: [cidr]
+            properties:
+              name: { type: string }
+              cidr: { type: string }
+              zone: { type: string, enum: [a, b, c, d, e, f], description: Logical zone; mapped to the region's AZs in sorted order }
+              tier: { type: string, enum: [public, private], default: private }
+        layout:
+          type: object
+          properties:
+            tiers: { type: array, items: { type: string, enum: [public, private] }, default: [public, private] }
+            zones: { type: integer, minimum: 1, maximum: 6, default: 2 }
+            prefix: { type: integer, minimum: 16, maximum: 28, description: Subnet size; defaults to the largest size that fits }
+
+    Plan:
+      type: object
+      properties:
+        name: { type: string }
+        cidr: { type: string }
+        tags: { type: object }
+        subnets: { type: array, items: { $ref: "#/components/schemas/Subnet" } }
+        summary:
+          type: object
+          properties:
+            vpc_addresses: { type: integer }
+            allocated_addresses: { type: integer }
+            unallocated_addresses: { type: integer }
+            subnet_count: { type: integer }
+            zones: { type: array, items: { type: string } }
+            internet_gateway: { type: boolean }
+
+    Subnet:
+      type: object
+      properties:
+        key: { type: string }
+        name: { type: string }
+        cidr: { type: string }
+        zone: { type: string }
+        tier: { type: string, enum: [public, private] }
+        usable_ips: { type: integer, description: Addresses left after the 5 AWS reserves }
+        state: { type: string, enum: [planned, available, deleted] }
+        subnet_id: { type: string, examples: [subnet-0abc1234def567890] }
+        availability_zone: { type: string, examples: [eu-central-1a] }
+
+    Network:
+      type: object
+      properties:
+        id: { type: string, examples: [net-01k8x3q9z2abcdefghjkmn] }
+        name: { type: string }
+        cidr: { type: string }
+        region: { type: string }
+        status: { $ref: "#/components/schemas/Status" }
+        tags: { type: object }
+        vpc_id: { type: string }
+        internet_gateway_id: { type: string }
+        public_route_table_id: { type: string }
+        subnets: { type: array, items: { $ref: "#/components/schemas/Subnet" } }
+        error: { type: object, properties: { code: { type: string }, message: { type: string } } }
+        created_by: { type: object, properties: { sub: { type: string }, username: { type: string }, client_id: { type: string } } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        execution_arn: { type: string, description: Step Functions execution handling the latest operation }
+        links: { type: object, properties: { self: { type: string }, subnets: { type: string }, events: { type: string } } }
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: array, items: { type: object, properties: { field: { type: string }, message: { type: string } } } }
+
+  responses:
+    BadRequest: { description: Malformed request, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Unauthorized: { description: Missing or invalid token (returned by API Gateway) }
+    NotFound: { description: Unknown network, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Conflict: { description: Operation not allowed in the current status, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Invalid:
+      description: Every validation problem, with the field it relates to
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              code: validation_failed
+              message: The request is not a valid network definition.
+              details:
+                - { field: "subnets[1].cidr", message: "10.0.0.128/25 overlaps 10.0.0.0/24 (a)" }

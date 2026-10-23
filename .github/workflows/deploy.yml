@@ -1,0 +1,86 @@
+name: deploy
+
+# Deploys infra/app with Terraform using short-lived AWS credentials obtained
+# through GitHub OIDC (no stored AWS keys).
+#
+# One-time repository setup (values printed by `make bootstrap`):
+#   Settings -> Environments -> "aws"   (optionally add required reviewers)
+#   Settings -> Variables -> Actions:
+#     AWS_DEPLOY_ROLE_ARN   arn:aws:iam::<acct>:role/netloom-github-deploy
+#     AWS_REGION            eu-central-1
+#     TF_STATE_BUCKET       netloom-tfstate-<acct>-<region>
+#     NETLOOM_INVITED_USERS (optional) JSON list, e.g. ["reviewer@example.com"]
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "infra/app/**", ".github/workflows/deploy.yml"]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: plan only, or apply
+        type: choice
+        options: [apply, plan]
+        default: apply
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: aws
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_VAR_region: ${{ vars.AWS_REGION }}
+      TF_VAR_repository: ${{ github.repository }}
+      TF_VAR_invited_users: ${{ vars.NETLOOM_INVITED_USERS || '[]' }}
+    defaults:
+      run:
+        working-directory: infra/app
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+
+      - name: Init (S3 backend, native locking)
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=netloom/app.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Plan
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Apply
+        if: github.event_name == 'push' || inputs.action == 'apply'
+        run: terraform apply -input=false tfplan
+
+      - name: Post-deploy health check
+        if: github.event_name == 'push' || inputs.action == 'apply'
+        run: |
+          url=$(terraform output -raw api_url)
+          curl -fsS --retry 5 --retry-delay 3 "${url%/}/v1/health"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "${url%/}/v1/networks")
+          test "$code" = "401" || { echo "expected 401 without token, got $code"; exit 1; }
+          echo "### Deployed :rocket:" >> "$GITHUB_STEP_SUMMARY"
+          echo "API: ${url}" >> "$GITHUB_STEP_SUMMARY"

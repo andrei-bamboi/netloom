@@ -1,0 +1,7 @@
+project              = "netloom"
+environment          = "dev"
+region               = "eu-central-1"
+repository           = "your-org/netloom"
+invited_users        = ["reviewer@example.com"]
+cors_allowed_origins = []
+protect_data         = false

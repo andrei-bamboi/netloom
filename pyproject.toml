@@ -1,0 +1,22 @@
+[project]
+name = "netloom"
+version = "1.0.0"
+description = "Authenticated, asynchronous API that provisions AWS VPCs with multiple subnets."
+requires-python = ">=3.12"
+dependencies = []  # boto3 is provided by the AWS Lambda Python runtime
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "BLE"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["netloom", "conftest"]

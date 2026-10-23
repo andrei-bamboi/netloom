@@ -1,0 +1,4 @@
+boto3>=1.40
+moto[ec2,dynamodb,stepfunctions]>=5.1
+pytest>=8.3
+ruff>=0.13
