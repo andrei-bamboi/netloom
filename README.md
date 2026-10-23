@@ -22,6 +22,10 @@ GET  /v1/networks/{id}                          ◄──  AVAILABLE, with every
 
 ## Architecture
 
+![netloom architecture](docs/architecture.png)
+
+<sub>Source: [docs/architecture.svg](docs/architecture.svg). The diagrams below are the Mermaid versions that GitHub renders.</sub>
+
 ```mermaid
 flowchart LR
     U[User / CI job] -- "1 · sign in" --> C[(Cognito<br/>user pool)]
