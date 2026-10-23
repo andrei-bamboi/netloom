@@ -31,9 +31,30 @@ from urllib.parse import parse_qsl, urlsplit
 import boto3
 from botocore.config import Config
 
+if sys.version_info < (3, 9):  # noqa: UP036 - keep the gateway usable on older local Pythons
+    sys.exit("local_gateway.py needs Python 3.9+")
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-from netloom.api import ROUTES  # noqa: E402 - route table shared with the Lambda
+SPEC_FILE = ROOT / "src" / "netloom" / "openapi.json"
+METHODS = ("get", "post", "put", "patch", "delete")
+
+
+def load_routes() -> dict:
+    """routeKey -> needs_identity, read from the OpenAPI document the Lambda serves.
+
+    tests/test_openapi.py guarantees this matches the Lambda's own route table and
+    Terraform, so the gateway needs no import of application code (and works on
+    whatever Python the developer's machine has)."""
+    spec = json.loads(SPEC_FILE.read_text(encoding="utf-8"))
+    return {
+        f"{method.upper()} {path}": op.get("security") != []
+        for path, item in spec["paths"].items()
+        for method, op in item.items()
+        if method in METHODS
+    }
+
+
+ROUTES = load_routes()
 
 DEV_TOKEN = re.compile(r"^Bearer local-([A-Za-z0-9._@-]{1,64})$")
 
@@ -41,7 +62,7 @@ DEV_TOKEN = re.compile(r"^Bearer local-([A-Za-z0-9._@-]{1,64})$")
 def compile_routes() -> list[tuple[str, str, re.Pattern, bool]]:
     """routeKey 'GET /v1/networks/{id}' -> ('GET', routeKey, ^/v1/networks/(?P<id>[^/]+)$, needs_identity)."""
     table = []
-    for route_key, (_, needs_identity) in ROUTES.items():
+    for route_key, needs_identity in ROUTES.items():
         method, path = route_key.split(" ", 1)
         regex = "^" + re.sub(r"\\\{(\w+)\\\}", r"(?P<\1>[^/]+)", re.escape(path)) + "$"
         table.append((method, route_key, re.compile(regex), needs_identity))
