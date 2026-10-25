@@ -13,3 +13,7 @@ __pycache__/
 .build/
 infra/app/backend.hcl
 crash.log
+
+# local artefacts
+*.bundle
+Claude outputs/
